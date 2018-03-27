@@ -1,4 +1,5 @@
 loadLibraries <- function(){
+  library(mgcv)
   library(caret)
   library(plyr)
   library(recipes)
@@ -11,157 +12,77 @@ loadLibraries <- function(){
   library(DMwR)
   library(naivebayes)
   library(nnet)
-  library(mgcv)
-}
-
-readData <- function(){
-  #Must set working directory prior to calling.
-  train <- read.csv("cs-training.csv", header=TRUE)
-  test <- read.csv("cs-test.csv", header=TRUE)
-  mylist <- list(train, test)
-  return(mylist)
-}
-
-NAtoMedian <- function(variable) {
-  variable <- as.numeric(as.character(variable))
-  variable[is.na(variable)] <- median(variable, na.rm=TRUE)
-  return(variable)
-}
-
-medianReplacement <- function(medianData) {
-  medianData$MonthlyIncome <- NAtoMedian(medianData$MonthlyIncome)
-  medianData$NumberOfDependents <- NAtoMedian(medianData$NumberOfDependents)
-  medianData$NumberOfTimes90DaysLate <- NAtoMedian(medianData$NumberOfTimes90DaysLate)
-  medianData$NumberOfTime60.89DaysPastDueNotWorse <- NAtoMedian(medianData$NumberOfTime60.89DaysPastDueNotWorse)
-  medianData$NumberOfTime30.59DaysPastDueNotWorse <- NAtoMedian(medianData$NumberOfTime30.59DaysPastDueNotWorse)
-  medianData$age <- NAtoMedian(medianData$age)
-  return(medianData)
 }
 
 imputeReplacement <- function(imputeData) {
-  #transform all features to dummy variables
+  # transform all features to dummy variables -------------------------------
   dummy.vars <- dummyVars(~ ., data=imputeData[, -1])
   train.dummy <- predict(dummy.vars, imputeData[, -1])
-  #leverage bagged desicion trees to impute missing values
+  # leverage bagged desicion trees to impute missing values -----------------
   pre.process <- preProcess(train.dummy, method="bagImpute")
   imputed.data <- predict(pre.process, train.dummy)
-  #add imputed values to data set
-  imputeData$NumberOfTime30.59DaysPastDueNotWorse <- imputed.data[, 3]
-  imputeData$NumberOfTime60.89DaysPastDueNotWorse <- imputed.data[, 9]
-  imputeData$NumberOfTimes90DaysLate <- imputed.data[, 7]
+  # Integrate imputed vals with data ----------------------------------------
   imputeData$MonthlyIncome <- imputed.data[, 5]
   imputeData$NumberOfDependents <- imputed.data[, 10]
-  imputeData$age <- imputed.data[, 2]
+  
   return(imputeData)
 }
 
-medianOrImpute <- function(medianData, imputeData) {
-  set.seed(12345)
-  indexes <- createDataPartition(medianData$SeriousDlqin2yrs, p = 0.67, list = FALSE)
-  medianData.train <- medianData[indexes, ]
-  medianData.test <- medianData[-indexes, ]
-  imputeData.train <- imputeData[indexes, ]
-  imputeData.test <- imputeData[-indexes, ]
-  
-  train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, search = "grid", 
-                                classProbs=TRUE, summaryFunction=twoClassSummary)
-  
-  cl <- makeCluster(3, type = "SOCK")
-  registerDoSNOW(cl)
-  set.seed(12345)
-  median.logitModel <- train(SeriousDlqin2yrs~., data=medianData.train, method="glm", 
-                             trControl=train.control, metric="ROC", family=binomial(link="logit"), 
-                             preProcess=c("center", "scale"))
-  set.seed(12345)
-  impute.logitModel <- train(SeriousDlqin2yrs~., data=imputeData.train, method="glm", 
-                             trControl=train.control, metric="ROC", family=binomial(link="logit"), 
-                             preProcess=c("center", "scale"))
-  stopCluster(cl)
-  
-  median.probs <- predict(median.logitModel, medianData.test[,-1], type="prob")[,2]
-  impute.probs <- predict(impute.logitModel, imputeData.test[,-1], type="prob")[,2]
-  median.auc <- auc(medianData.test[,1], median.probs)
-  impute.auc <- auc(imputeData.test[,1], impute.probs)
-  
-  if (median.auc >= impute.auc) {
-    return(medianData)
-  } else {
-    imputed <- TRUE
-    return(imputeData)
-  }
-}
-
-cleanData <- function(data, trainingSet) {
-  #trainingSet - boolean indicator for training set being passed
-  
-  #remove unneccesary id column
-  data <- data[ ,-1]
-  
-  #########################
-  ## Indicator variables ##
-  #########################
-  data$MissingIncome <- ifelse(is.na(data$MonthlyIncome), 1, 0)
-  data$ZeroIncome <- ifelse(data$MonthlyIncome==0, 1, 0) #unemployed...?
-  data$ZeroIncome[is.na(data$ZeroIncome)] <- 0 
-  data$MissingDependents <- ifelse(is.na(data$NumberOfDependents), 1, 0)
-  #96 and 98 val across row indicators (0.9999 RevolvingUtilizationOfUnsecuredLines)
-  data$Indicator_96 <- ifelse(data$NumberOfTimes90DaysLate==96, 1, 0)
-  data$Indicator_98 <- ifelse(data$NumberOfTimes90DaysLate==98, 1, 0)
-  
-  ####################
-  ## Set up factors ##
-  ####################
+cleanData <- function(data) {
+  data <- data[ ,-1] #remove unneccesary id column
+  # Set up factors ----------------------------------------------------------
   data$SeriousDlqin2yrs <- as.factor(make.names(data$SeriousDlqin2yrs))
-  data$ZeroIncome <- as.factor(data$ZeroIncome)  
-  data$MissingIncome <- as.factor(data$MissingIncome)
-  data$MissingDependents <- as.factor(data$MissingDependents)
-  data$Indicator_96 <- as.factor(data$Indicator_96)
-  data$Indicator_98 <- as.factor(data$Indicator_98)
-  
-  ####################
-  ## Modifly values ##
-  ####################
-  #change MonthlyIncome = 1 values to 0 (no different - indicating the same thing)
-  data$MonthlyIncome <- ifelse(data$MonthlyIncome==1, 0, data$MonthlyIncome)
-  #change 96/98 values to NA for imputation
+  # Deal with outliers ------------------------------------------------------
+  data$MonthlyIncome <- ifelse(data$MonthlyIncome > 300000,
+                               300000,
+                               data$MonthlyIncome)
+  data$DebtRatio <- ifelse(data$DebtRatio > 500,
+                           500,
+                           data$DebtRatio)
+  data$RevolvingUtilizationOfUnsecuredLines <- ifelse(data$RevolvingUtilizationOfUnsecuredLines > 2,
+                                                      2,
+                                                      data$RevolvingUtilizationOfUnsecuredLines)
+  data$NumberRealEstateLoansOrLines <- ifelse(data$NumberRealEstateLoansOrLines > 17,
+                                              17,
+                                              data$NumberRealEstateLoansOrLines)
+  data$NumberOfDependents <- ifelse(data$NumberOfDependents > 10,
+                                    10,
+                                    data$NumberOfDependents)
+  # Median replacement ------------------------------------------------------
+  data$MonthlyIncome <- ifelse(data$MonthlyIncome==1, 0, data$MonthlyIncome) #MonthlyIncome = 1 values to 0
   data$NumberOfTime30.59DaysPastDueNotWorse <- ifelse(data$NumberOfTime30.59DaysPastDueNotWorse==96,
-                                                      NA, data$NumberOfTime30.59DaysPastDueNotWorse)
+                                                      median(data$NumberOfTime30.59DaysPastDueNotWorse, na.rm=TRUE), 
+                                                      data$NumberOfTime30.59DaysPastDueNotWorse)
   data$NumberOfTime30.59DaysPastDueNotWorse <- ifelse(data$NumberOfTime30.59DaysPastDueNotWorse==98,
-                                                      NA, data$NumberOfTime30.59DaysPastDueNotWorse)
+                                                      median(data$NumberOfTime30.59DaysPastDueNotWorse, na.rm=TRUE), 
+                                                      data$NumberOfTime30.59DaysPastDueNotWorse)
   data$NumberOfTime60.89DaysPastDueNotWorse <- ifelse(data$NumberOfTime60.89DaysPastDueNotWorse==96,
-                                                      NA, data$NumberOfTime60.89DaysPastDueNotWorse)
+                                                      median(data$NumberOfTime60.89DaysPastDueNotWorse, na.rm=TRUE), 
+                                                      data$NumberOfTime60.89DaysPastDueNotWorse)
   data$NumberOfTime60.89DaysPastDueNotWorse <- ifelse(data$NumberOfTime60.89DaysPastDueNotWorse==98,
-                                                      NA, data$NumberOfTime60.89DaysPastDueNotWorse)
+                                                      median(data$NumberOfTime60.89DaysPastDueNotWorse, na.rm=TRUE), 
+                                                      data$NumberOfTime60.89DaysPastDueNotWorse)
   data$NumberOfTimes90DaysLate <- ifelse(data$NumberOfTimes90DaysLate==96,
-                                         NA, data$NumberOfTimes90DaysLate)
+                                         median(data$NumberOfTimes90DaysLate, na.rm=TRUE), 
+                                         data$NumberOfTimes90DaysLate)
   data$NumberOfTimes90DaysLate <- ifelse(data$NumberOfTimes90DaysLate==98,
-                                         NA, data$NumberOfTimes90DaysLate)
-  #change age=0 value to NA for imputation
-  data$age <- ifelse(data$age==0, NA, data$age)
+                                         median(data$NumberOfTimes90DaysLate, na.rm=TRUE), 
+                                         data$NumberOfTimes90DaysLate)
+  data$age <- ifelse(data$age==0, 
+                     median(data$age, na.rm=TRUE), 
+                     data$age)
+  # Impute NAs: MonthlyIncome & NumberOfDependents --------------------------
+  data <- imputeReplacement(data)
+  # Return cleaned data -----------------------------------------------------
   
-  if(trainingSet) {
-    #working with training set
-    medianData <- medianReplacement(data)
-    imputeData <- imputeReplacement(data)
-    cleanData <- medianOrImpute(medianData, imputeData)
-  } else {
-    #working with test set
-    if(imputed) {
-      #if imputation worked best with training set
-      cleanData <- imputeReplacement(data)
-    } else {
-      #else median replacement worked best with training set
-      cleanData <- medianReplacement(data)
-    }
-  }
-  return(cleanData)
+  return(data)
 }
 
 modelAUC <- function(myModels, newData){
   #Returns auc on test set for models passed in.
   myProbs <- lapply(myModels, function(m){predict(m, newData[,-1], type="prob")[,2]})
   myAUC <- lapply(myProbs, function(p){auc(newData[,1], p)})
-  
+
   return(myAUC)
 }
 
@@ -179,16 +100,7 @@ findWinners <- function(myModels, newData, num){
   return(winners)
 }
 
-makeSubmission <- function(model.final, submodels, fileName){
-  #Predict defaults on test set and then write results to .csv file.
-  id <- test[, 1]
-  test <- cleanData(test, FALSE)
-  test <- test[,-1]
-  
-  subProbs <- subPredictions(submodels, test)
-  
-  prob<- predict(model.final, subProbs, type="prob")[, 2]
-  
+makeSubmission <- function(prob, id, fileName){
   pred <- cbind.data.frame(id, prob)
   colnames(pred) <- c("Id", "Probability")
   write.csv(pred, file = fileName, row.names = FALSE)
@@ -233,7 +145,8 @@ buildGLM <- function(train1, fitCtrl){
                      probit = model.probit, 
                      cloglog = model.cloglog)
   
-  save(models.GLM, file = "models_GLM.rda")
+  save(models.GLM, file = "models_GLMvm.rda")
+  
   return(models.GLM)
 }
 
@@ -252,7 +165,7 @@ buildPGLM <- function(train1, fitCtrl){
                        tuneLength=100, 
                        preProcess=c("center", "scale"))
   
-  
+ 
   grid.lasso <- expand.grid(alpha = 1, lambda = unique(model.elnet$results$lambda))
   grid.ridge <- expand.grid(alpha = 0, lambda = unique(model.elnet$results$lambda))
   
@@ -283,7 +196,8 @@ buildPGLM <- function(train1, fitCtrl){
                       LASSO = model.LASSO, 
                       ridge = model.ridge)
   
-  save(models.PGLM, file = "models_PGLM.rda")
+  save(models.PGLM, file = "models_PGLMvm.rda")
+  
   return(models.PGLM)
 }
 
@@ -292,7 +206,7 @@ buildMisc <- function(train1, fitCtrl){
   cl <- makeCluster(4, type="SOCK")
   registerDoSNOW(cl)
   
-  
+ 
   set.seed(12345)
   #Naive Bayes classifier
   model.naiveb <- train(SeriousDlqin2yrs~., 
@@ -305,7 +219,7 @@ buildMisc <- function(train1, fitCtrl){
   
   #Neural net
   grid.nnet <- expand.grid(size=10, decay=0)
-  
+
   set.seed(12345)
   model.nnet <- train(SeriousDlqin2yrs~., 
                       data=train1, 
@@ -317,7 +231,7 @@ buildMisc <- function(train1, fitCtrl){
                       trace=FALSE, 
                       reltol=1e-3)
   
-  
+
   set.seed(12345)
   #Generalized additive model
   model.gam <- train(SeriousDlqin2yrs~., 
@@ -339,7 +253,7 @@ buildMisc <- function(train1, fitCtrl){
   
   
   
-  
+
   stopCluster(cl)
   registerDoSEQ()
   
@@ -348,7 +262,8 @@ buildMisc <- function(train1, fitCtrl){
                       naiveBayes = model.naiveb,
                       gam = model.gam)
   
-  save(models.Misc, file = "models_Misc.rda")
+  save(models.Misc, file = "models_Miscvm.rda")
+  
   return(models.Misc)
 }
 
@@ -365,33 +280,84 @@ buildEnsemble <- function(myModels, train2, fitCtrl){
                         metric="ROC", 
                         family=binomial(link="logit"))
   
-  save(model.blogit, file = "model_FINAL.rda")
+  save(model.blogit, file = "model_FINALvm.rda")
   
   return(model.blogit)
+}
+
+plotROC <- function(response, modelPreds, modelNames) {
+  #pass function response variable, model predictions, and model name(s) 
+  colors <- c("coral", "royalblue1", "mediumseagreen", "yellow")
+  auc <- c(rep(0,length(modelNames)))
+  if (length(modelNames) > 1) {
+    for (i in 1:length(modelNames)) { 
+      auc[i] <- roc(response, modelPreds[ ,i])$auc 
+    }
+    plot(roc(response, modelPreds[ ,1]), 
+         main="ROC Curve(s)", 
+         col=colors[1],
+         legacy.axes=TRUE,
+         ylab="Sensitivity (TPR)",
+         xlab="1 - Specificity (FPR)",
+         ylim=c(0,1),
+         xlim=c(1,0))
+    for (i in 1:length(modelNames)-1) {
+      plot(roc(response, modelPreds[ ,i+1]), 
+           add=TRUE, 
+           col=colors[i+1])
+    }
+  } else {
+    auc <- roc(response, modelPreds)$auc
+    plot(roc(response, modelPreds), 
+         main="ROC Curve(s)", 
+         col=colors[1],
+         legacy.axes=TRUE,
+         ylab="Sensitivity (TPR)",
+         xlab="1 - Specificity (FPR)",
+         ylim=c(0,1),
+         xlim=c(1,0))
+  }
+  grid()
+  legend(0.6, 0.3, legend=paste(modelNames, round(auc, 4), sep=": AUC = "),
+         col=colors, lty=1, cex=0.6, bg="lightgrey", text.font=4)
 }
 
 subPredictions <- function(submodels, train2){
   probs <- lapply(submodels, function(m){predict(m, train2[,-1], type="prob")[,2]})
   names(probs)<-paste("m", 1:length(probs), sep = "")
   probs<-as.data.frame(probs)
+  
   return(probs)
 }
 
+ensemblePredictions <- function(model.final, submodels, test){
+  subProbs <- subPredictions(submodels, test)
+  prob<- predict(model.final, subProbs, type="prob")[, 2]
+  
+  return(prob)
+}
+
+savePredictions <- function(myModels, newData, fileName){
+  myProbs <- as.data.frame(lapply(myModels, function(m){predict(m, newData[,-1], type="prob")[,2]}))
+  y <- newData$SeriousDlqin2yrs
+  myPreds <- cbind.data.frame(y, myProbs)
+  
+  save(myPreds, file=fileName)
+}
+
 runItAll <- function(){
-  setwd("~/Desktop/STAT458/Project")
   loadLibraries()
   
-  compData <- readData()
+  train <- read.csv("cs-training.csv", header=TRUE)
+  train <- cleanData(train)
   
-  imputed <- FALSE
-  train <- cleanData(compData[[1]], TRUE)
-
   set.seed(12345)
   index <- createDataPartition(train$SeriousDlqin2yrs, p=0.67, list=FALSE)
+  
   train1 <- train[index,]
   train2 <- train[-index,]
-  
-  d1 <- SMOTE(SeriousDlqin2yrs~., data = train1, k=10, perc.over = 1000, perc.under = 0)
+ 
+  d1 <- SMOTE(SeriousDlqin2yrs~., data = train1, k=10, perc.over = 800, perc.under = 0)
   train1 <- rbind(train1, d1)
   
   fitCtrl <- trainControl(method="repeatedcv", 
@@ -400,37 +366,40 @@ runItAll <- function(){
                           classProbs=TRUE, 
                           summaryFunction=twoClassSummary, 
                           selectionFunction ="oneSE")
+
   
-  
-  
+  #Fit and save models
   myGLM <- buildGLM(train1, fitCtrl)
   myPGLM <- buildPGLM(train1, fitCtrl)
   myMisc <- buildMisc(train1, fitCtrl)
   
+  
+  #Save predictions for report
+  savePredictions(myGLM, train2, "GLM_predvm.rda")
+  savePredictions(myPGLM, train2, "PGLM_predvm.rda")
+  savePredictions(myMisc, train2, "Misc_predvm.rda")
+  
+  
+  #Find n best of each model type
   submodels <- c(findWinners(myMisc, train2, 2), 
                  findWinners(myPGLM, train2, 1),
                  findWinners(myGLM, train2, 1))
   
+  save(submodels, file="submodelsvm.rda")
   
-  #---------------IF LOADING MODELS IN---------------
+  #Remove models to save space
+  rm(myGLM, myPGLM, myMisc)
+  gc(verbose=FALSE)
   
-  load("models_GLM.rda")
-  load("models_PGLM.rda")
-  load("models_Misc.rda")
-  models.Misc<-models.Misc[-4] #GAM throws error when predicting is loaded in
-  
-  submodels <- c(findWinners(models.Misc, train2, 2), 
-                 findWinners(models.GLM, train2, 1),
-                 findWinners(models.PGLM, train2, 1))
-  
-  #---------------------------------------------------- 
-  
-  
-  #submodels <- c(findWinners(myMisc, train2, 2), 
-  #                findWinners(myPGLM, train2, 1),
-  #                findWinners(myGLM, train2, 1))
-  
+ 
+  #Fit ensemble model
   model.FINAL <- buildEnsemble(submodels, train2, fitCtrl)
-  makeSubmission(model.FINAL, submodels, "testtesttest6.csv")
   
+  #Prep test data and make submission
+  test <- read.csv("cs-test.csv", header=TRUE)
+  id <- test[,1]
+  test <- cleanData(test)
+  
+  pred <- ensemblePredictions(model.FINAL, submodels, test)
+  makeSubmission(pred, id, "Submission_vm.csv")
 }
