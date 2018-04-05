@@ -9,3 +9,5 @@ Competition: https://www.kaggle.com/c/GiveMeSomeCredit
 Final score: 0.8526 
 
 Winning team scored: 0.869558 
+
+Project presentation available upon request
