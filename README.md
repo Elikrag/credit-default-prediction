@@ -2,7 +2,7 @@
 
 University of Victoria - STAT458: Group Project
   - Choose a binary classification Kaggle competition and build a model
-  - Group members: Eli Krag, Andy Muth
+  - Group members: Eli Krag, Andy Muth, Sonya Romanovska
 
 Competition: https://www.kaggle.com/c/GiveMeSomeCredit 
 
